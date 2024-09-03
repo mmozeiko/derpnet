@@ -88,9 +88,10 @@ Sending message... OK!
 
 [derpnet_file.c][] - simple file sharing utility.
 
-To receives file, run:
+To receive file, run:
 ```
-$ derpnet_file.exe r 202039d3287be295c12747a6b913e9ac22c3ea7c8f650168f9187b1cd0927a6d
+$ derpnet_file.exe r
+My PUBLIC key is: 1fe6abe742051e8c78576e999d9423d3ae97495fafaadfcf9592b6e89d97a558
 Connecting to server... OK!
 Waiting for filename... receiving 'testfile.bin' file
 Receiving: 3808 KB - 470.70 KB/s
@@ -98,9 +99,9 @@ Done!
 Received 4189 KB in 9.0 seconds = 467.55 KB/s
 ```
 
-To send file, run:
+To send file - first get public key of receiver, then run:
 ```
-$ derpnet_file.exe s 682c12accee6bc5baf919bb9e8f697536fdcbb67013a29326fb9852490812258 a0aaf4763ed56d734672e43b6ffbc9e185da7fda0b40b15c184c4b2385b6d213 testfile.bin
+$ derpnet_file.exe s 1fe6abe742051e8c78576e999d9423d3ae97495fafaadfcf9592b6e89d97a558 testfile.bin
 Connecting to server... OK!
 Sending filename... OK!
 Sending: 3936 KB - 482.23 KB/s

@@ -10,20 +10,15 @@
 static void PrintHelpAndExit(char* argv0)
 {
 	printf(
-		"USAGE: %s g\n"
-		"Generates and prints mew PRIVATE and PUBLIC key\n"
-		"\n"
-		"USAGE: %s s my_key other_key filename\n"
-		"Sends message to other user:\n"
-		" - my_key    = my PRIVATE key\n"
+		"USAGE: %s s other_user filename\n"
+		"Sends file to other user:\n"
 		" - other_key = PUBLIC key of user to send to\n"
-		" - filanem   = file to send\n"
+		" - filename  = file to send\n"
 		"\n"
-		"USAGE: %s r my_key\n"
-		 "Receives one file from other users:\n"
-		 " - my_key = my PRIVATE key\n"
+		"USAGE: %s r\n"
+		 "Receives one file from first sender\n"
 		 "\n"
-		 , argv0, argv0, argv0);
+		 , argv0, argv0);
 	exit(0);
 }
 
@@ -59,32 +54,18 @@ int main(int argc, char* argv[])
 		PrintHelpAndExit(argv[0]);
 	}
 
-	if (strcmp(argv[1], "g") == 0)
+	if (strcmp(argv[1], "s") == 0)
 	{
-		DerpKey SecretKey;
-		DerpNet_CreateNewKey(&SecretKey);
-
-		DerpKey PublicKey;
-		DerpNet_GetPublicKey(&SecretKey, &PublicKey);
-
-		printf("Your PRIVATE key is: ");
-		PrintKey(&SecretKey);
-		printf(" - do NOT share this with anyone!\n");
-
-		printf("Your PUBLIC key is:  ");
-		PrintKey(&PublicKey);
-		printf(" - give this to others\n");
-	}
-	else if (strcmp(argv[1], "s") == 0)
-	{
-		if (argc != 5)
+		if (argc != 4)
 		{
 			PrintHelpAndExit(argv[0]);
 		}
 
-		DerpKey MySecretKey = HexToKey(argv[2]);
-		DerpKey OtherUser = HexToKey(argv[3]);
-		const char* FileName = argv[4];
+		DerpKey MySecretKey;
+		DerpNet_CreateNewKey(&MySecretKey);
+
+		DerpKey OtherUser = HexToKey(argv[2]);
+		const char* FileName = argv[3];
 
 		FILE* File = fopen(FileName, "rb");
 		if (!File)
@@ -158,12 +139,20 @@ int main(int argc, char* argv[])
 	}
 	else if (strcmp(argv[1], "r") == 0)
 	{
-		if (argc != 3)
+		if (argc != 2)
 		{
 			PrintHelpAndExit(argv[0]);
 		}
 
-		DerpKey MySecretKey = HexToKey(argv[2]);
+		DerpKey MySecretKey;
+		DerpNet_CreateNewKey(&MySecretKey);
+
+		DerpKey MyPublicKey;
+		DerpNet_GetPublicKey(&MySecretKey, &MyPublicKey);
+
+		printf("My PUBLIC key is: ");
+		PrintKey(&MyPublicKey);
+		printf("\n");
 
 		DerpNet Net;
 
@@ -194,6 +183,12 @@ int main(int argc, char* argv[])
 
 			char FileName[256];
 			snprintf(FileName, sizeof(FileName), "%.*s", (int)ReceiveSize, (char*)ReceiveData);
+
+			if (strchr(FileName, '/') || strchr(FileName, '\\'))
+			{
+				printf("ERROR: filename contains bad characters!");
+				exit(1);
+			}
 
 			printf("receiving '%s' file\n", FileName);
 
