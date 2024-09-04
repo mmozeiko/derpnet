@@ -1,0 +1,67 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <script src="https://tweetnacl.js.org/nacl-fast.min.js"></script>
+  <script src="derpnet.js"></script>
+
+  <script>
+    // choose any hostname from https://login.tailscale.com/derpmap/default
+    // both peers do not need to be connected to the same server
+    // but they must be connected to the same region
+    const DERP_SERVER_HOST = "derp1f.tailscale.com";
+
+    addEventListener("DOMContentLoaded", (event) => {
+      const secretKey = derpNet.generateKey();
+      const publicKey = derpNet.getPublicKey(secretKey);
+
+      const hexStringToBytes = (hexString) => Uint8Array.from(hexString.match(/.{1,2}/g).map((byte) => parseInt(byte, 16)));
+      const bytesToHexString = (bytes) => bytes.reduce((str, byte) => str + byte.toString(16).padStart(2, "0"), "");
+      const $ = document.querySelector.bind(document);
+
+      $("#pubkey").innerText = bytesToHexString(publicKey);
+
+      const derp = derpNet(DERP_SERVER_HOST, secretKey,
+        () => {
+          $("#conn").innerText = "OK!";
+          $("#sendkey").disabled = false;
+          $("#message").disabled = false;
+        },
+
+        () => {
+          $("#conn").innerText = "DISCONNECTED";
+          $("#sendkey").disabled = true;
+          $("#message").disabled = true;
+        },
+
+        (publicKey, data) => {
+          const message = new TextDecoder().decode(data);
+          var text = document.createTextNode(message);
+          var span = document.createElement("span");
+          span.appendChild(text);
+          $("#messages").innerHTML += `${bytesToHexString(publicKey)}: ${span.innerHTML}<br/>`;
+        }
+      );
+
+      $("#message").addEventListener("keydown", (event) => {
+        if (event.key === "Enter") {
+          const publicKey = hexStringToBytes($("#sendkey").value);
+          const data = new TextEncoder().encode($("#message").value);
+          derp.send(publicKey, data);
+          $("#message").value = "";
+        }
+      });
+    });
+
+  </script>
+</head>
+<body>
+  <p>My PUBLIC key is: <span id="pubkey"/></p>
+  <p>Connecting to server... <span id="conn"/><p>
+  <pre id="messages"></pre>
+  <p>Public key to send to: <input id="sendkey" type="text" size=100 disabled /></p>
+  <p>Enter message to send: <input id="message" type="text" size=100 disabled /><p>
+</body>
+</html>

@@ -1,0 +1,189 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+
+  <script src="https://tweetnacl.js.org/nacl-fast.min.js"></script>
+  <script src="derpnet.js"></script>
+
+  <script>
+    // choose any hostname from https://login.tailscale.com/derpmap/default
+    // both peers do not need to be connected to the same server
+    // but they must be connected to the same region
+    const DERP_SERVER_HOST = "derp1f.tailscale.com";
+
+    addEventListener("DOMContentLoaded", (event) => {
+      const secretKey = derpNet.generateKey();
+      const publicKey = derpNet.getPublicKey(secretKey);
+
+      const hexStringToBytes = (hexString) => Uint8Array.from(hexString.match(/.{1,2}/g).map((byte) => parseInt(byte, 16)));
+      const bytesToHexString = (bytes) => bytes.reduce((str, byte) => str + byte.toString(16).padStart(2, "0"), "");
+      const $ = document.querySelector.bind(document);
+
+      $("#pubkey").innerText = bytesToHexString(publicKey);
+
+      const recv = new Map();
+
+      const derp = derpNet(DERP_SERVER_HOST, secretKey,
+        () => {
+          $("#conn").innerText = "OK!";
+          $("#sendkey").disabled = false;
+          $("#file").disabled = false;
+        },
+
+        () => {
+          $("#conn").innerText = "DISCONNECTED";
+          $("#sendkey").disabled = true;
+          $("#file").disabled = true;
+        },
+
+        (publicKey, data) => {
+          publicKey = String.fromCharCode(...publicKey);
+
+          if (!recv.has(publicKey)) {
+            const name = new TextDecoder().decode(data);
+
+            if (name.indexOf("/") >= 0 || name.indexOf("\\") >= 0) {
+              console.log("filename contains bad characters!");
+              return;
+            }
+
+            const status = document.createElement("span");
+            const temp = document.createElement("div");
+            temp.style = "font-family: monospace";
+            temp.appendChild(status);
+            $("#messages").appendChild(temp);
+
+            const clockStart = performance.now();
+            const clockNext = performance.now() + 1000;
+
+            recv.set(publicKey, {
+              size: 0,
+              clockStart: clockStart,
+              clockNext: clockNext,
+              name: name,
+              status: status,
+              file: new Uint8Array(64*1024),
+            });
+
+            return;
+          }
+
+          const info = recv.get(publicKey);
+
+          if (data.length == 0) {
+
+            const totalSize = info.size / 1024;
+            const totalTime = (performance.now() - info.clockStart) / 1000.0;
+            const totalSpeed = totalSize / totalTime;
+            info.status.innerText = `Received ${totalSize.toFixed(2)} KB in ${totalTime.toFixed(2)} seconds = ${totalSpeed.toFixed(2)} KB/s, `;
+
+            const blob = new Blob([info.file.slice(0, info.size)], {type: "application/octet-stream"});
+            const link = document.createElement("a");
+            link.href = window.URL.createObjectURL(blob);
+            link.innerText = info.name;
+            link.download = info.name;
+
+            info.status.parentNode.appendChild(link);
+
+            recv.delete(publicKey);
+
+          } else {
+
+            if (info.size + data.length > info.file.length) {
+              const file = new Uint8Array(info.file.length * 2);
+              file.set(info.file.slice(0, info.file.length));
+              info.file = file;
+            }
+
+            if (data === false) {
+              debugger;
+            }
+
+            info.file.set(data, info.size);
+            info.size += data.length;
+
+            const clockNow = performance.now();
+            if (clockNow > info.clockNext) {
+              const currentSize = info.size / 1024;
+              const currentSpeed = currentSize / ((clockNow - info.clockStart) / 1000.0);
+              info.status.innerText = `Receiving: ${currentSize.toFixed(2)} KB - ${currentSpeed.toFixed(2)} KB/s, ${info.name}`;
+              info.clockNext = clockNow + 1000;
+            }
+          }
+        }
+      );
+
+      const file = $("#file");
+      file.addEventListener("change", (event) => {
+        if (file.files.length == 0) {
+          return;
+        }
+
+        var f = file.files[0];
+
+        $("#sendkey").disabled = true;
+        $("#file").disabled = true;
+
+        const status = document.createElement("div");
+        $("#messages").appendChild(status);
+
+        const publicKey = hexStringToBytes($("#sendkey").value);
+
+        const data = new TextEncoder().encode(f.name);
+        derp.send(publicKey, data);
+
+        let fileOffset = 0;
+        const fileSize = f.size;
+        const fileName = f.name;
+        const fileChunk = 4096;
+
+        let clockStart = performance.now();
+        let clockNext = clockStart + 1000;
+
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          const clockNow = performance.now();
+          if (clockNow > clockNext) {
+
+            const currentSize = fileOffset / 1024;
+            const currentSpeed = currentSize / ((clockNow - clockStart) / 1000.0);
+            const progress = fileOffset * 100.0 / fileSize;
+            status.innerText = `Sending: ${currentSize.toFixed(2)} KB (${progress.toFixed(1)}%) - ${currentSpeed.toFixed(2)} KB/s, ${fileName}`;
+
+            clockNext = clockNow + 1000;
+          }
+
+          derp.send(publicKey, new Uint8Array(reader.result), () => {
+            fileOffset += reader.result.byteLength;
+
+            if (fileOffset == fileSize) {
+              derp.send(publicKey, new Uint8Array());
+
+              const totalSize = fileSize / 1024;
+              const totalTime = (performance.now() - clockStart) / 1000.0;
+              const totalSpeed = totalSize / totalTime;
+              status.innerText = `Sent ${totalSize.toFixed(2)} KB in ${totalTime.toFixed(2)} seconds = ${totalSpeed.toFixed(2)} KB/s, ${fileName}`;
+
+              $("#sendkey").disabled = false;
+              $("#file").disabled = false;
+              $("#file").value = null;
+            } else {
+              reader.readAsArrayBuffer(f.slice(fileOffset, fileOffset + fileChunk));
+            }
+          });
+        };
+        reader.readAsArrayBuffer(f.slice(0, fileChunk));
+      });
+    });
+  </script>
+</head>
+<body>
+  <p>My PUBLIC key is: <span id="pubkey"/></p>
+  <p>Connecting to server... <span id="conn"/><p>
+  <div id="messages" style="font-family: monospace"></div>
+  <p>Public key to where send file: <input id="sendkey" type="text" size=100 disabled /></p>
+  <p>File to send: <input id="file" type="file" disabled /><p>
+</body>
+</html>
