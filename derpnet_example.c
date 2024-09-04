@@ -9,20 +9,15 @@
 static void PrintHelpAndExit(char* argv0)
 {
 	printf(
-		"USAGE: %s g\n"
-		"Generates and prints mew PRIVATE and PUBLIC key\n"
-		"\n"
-		"USAGE: %s s my_key other_key message\n"
+		"USAGE: %s s other_key message\n"
 		"Sends message to other user:\n"
-		" - my_key    = my PRIVATE key\n"
 		" - other_key = PUBLIC key of user to send to\n"
 		" - message   = arbitrart text to send\n"
 		"\n"
-		"USAGE: %s r my_key\n"
-		 "Receives message from other users:\n"
-		 " - my_key = my PRIVATE key\n"
+		"USAGE: %s r\n"
+		 "Receives messages from other users\n"
 		 "\n"
-		 , argv0, argv0, argv0);
+		 , argv0, argv0);
 	exit(0);
 }
 
@@ -76,14 +71,16 @@ int main(int argc, char* argv[])
 	}
 	else if (strcmp(argv[1], "s") == 0)
 	{
-		if (argc != 5)
+		if (argc != 4)
 		{
 			PrintHelpAndExit(argv[0]);
 		}
 
-		DerpKey MySecretKey = HexToKey(argv[2]);
-		DerpKey OtherUser = HexToKey(argv[3]);
-		const char* Message = argv[4];
+		DerpKey MySecretKey;
+		DerpNet_CreateNewKey(&MySecretKey);
+
+		DerpKey OtherUser = HexToKey(argv[2]);
+		const char* Message = argv[3];
 
 		DerpNet Net;
 
@@ -107,12 +104,20 @@ int main(int argc, char* argv[])
 	}
 	else if (strcmp(argv[1], "r") == 0)
 	{
-		if (argc != 3)
+		if (argc != 2)
 		{
 			PrintHelpAndExit(argv[0]);
 		}
 
-		DerpKey MySecretKey = HexToKey(argv[2]);
+		DerpKey MySecretKey;
+		DerpNet_CreateNewKey(&MySecretKey);
+
+		DerpKey MyPublicKey;
+		DerpNet_GetPublicKey(&MySecretKey, &MyPublicKey);
+
+		printf("My PUBLIC key is: ");
+		PrintKey(&MyPublicKey);
+		printf("\n");
 
 		DerpNet Net;
 

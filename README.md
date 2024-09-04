@@ -63,23 +63,16 @@ To compile examples simply run `cl.exe file.c` or `clang-cl.exe file.c`
 
 To receives messages, run:
 ```
-$ derpnet_example.exe g
-Your PRIVATE key is: 202039d3287be295c12747a6b913e9ac22c3ea7c8f650168f9187b1cd0927a6d - do NOT share this with anyone!
-Your PUBLIC key is:  a0aaf4763ed56d734672e43b6ffbc9e185da7fda0b40b15c184c4b2385b6d213 - give this to others
-
-$ derpnet_example.exe r 202039d3287be295c12747a6b913e9ac22c3ea7c8f650168f9187b1cd0927a6d
+$ derpnet_example.exe r
+My PUBLIC key is: a0aaf4763ed56d734672e43b6ffbc9e185da7fda0b40b15c184c4b2385b6d213 - give this to others
 Connecting to server... OK!
 Waiting for messages...
 17998c85c4f1895170c7bfa28bc5a009c9101c652b921cb71ce1e7fcdcb7b24c: Hello World!
 ```
 
-To send message, run:
+To send a message, run:
 ```
-$ derpnet_example.exe g
-Your PRIVATE key is: 682c12accee6bc5baf919bb9e8f697536fdcbb67013a29326fb9852490812258 - do NOT share this with anyone!
-Your PUBLIC key is:  17998c85c4f1895170c7bfa28bc5a009c9101c652b921cb71ce1e7fcdcb7b24c - give this to others
-
-$ derpnet_example.exe s 682c12accee6bc5baf919bb9e8f697536fdcbb67013a29326fb9852490812258 a0aaf4763ed56d734672e43b6ffbc9e185da7fda0b40b15c184c4b2385b6d213 "Hello World!"
+$ derpnet_example.exe s a0aaf4763ed56d734672e43b6ffbc9e185da7fda0b40b15c184c4b2385b6d213 "Hello World!"
 Connecting to server... OK!
 Sending message... OK!
 ```
