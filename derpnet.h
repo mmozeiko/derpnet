@@ -1617,8 +1617,15 @@ bool DerpNet_Send(DerpNet* Net, const DerpKey* TargetUserPublicKey, const void* 
 
 	OutFrame[0] = 4; // SendPacket
 	Set32BE(OutFrame + 1, (uint32_t)(OutFrameSize - (1 + 4)));
-	memcpy(OutFrame + 1 + 4, TargetUserPublicKey->Bytes, sizeof(TargetUserPublicKey->Bytes));
-	DerpNet__BoxSeal(OutFrame + 1 + 4 + 32, OutFrame + 1 + 4 + 32 + 24, OutFrame + 1 + 4 + 32 + 24 + 16, (uint8_t*)Data, DataSize, Net->UserPrivateKey, TargetUserPublicKey->Bytes);
+
+	uint8_t* PublicKey = OutFrame + 1 + 4;
+	memcpy(PublicKey, TargetUserPublicKey->Bytes, sizeof(TargetUserPublicKey->Bytes));
+
+	uint8_t* Nonce = PublicKey + 32;
+	uint8_t* Auth = Nonce + 24;
+	uint8_t* Output = Auth + 16;
+
+	DerpNet__BoxSeal(Nonce, Auth, Output, (uint8_t*)Data, DataSize, Net->UserPrivateKey, PublicKey);
 
 	return DerpNet__TlsWrite(Net, OutFrame, OutFrameSize);
 }
