@@ -1229,6 +1229,8 @@ static bool DerpNet__TlsRead(DerpNet* Net, bool Wait)
 			return false;
 		}
 
+		DERPNET_LOG("reading more data from socket, BufferSize=%zu, BufferReceived=%zu", Net->BufferSize, Net->BufferReceived);
+
 		fd_set ReadSet;
 		FD_ZERO(&ReadSet);
 		FD_SET(Net->Socket, &ReadSet);
@@ -1260,6 +1262,11 @@ static bool DerpNet__TlsRead(DerpNet* Net, bool Wait)
 
 static void DerpNet__TlsConsume(DerpNet* Net, size_t PlaintextSize)
 {
+	if (PlaintextSize == 0)
+	{
+		return;
+	}
+
 	DERPNET_ASSERT(Net->BufferSize <= Net->BufferReceived);
 	DERPNET_ASSERT(PlaintextSize <= Net->BufferSize);
 
@@ -1274,18 +1281,24 @@ static int DerpNet__ReadFrame(DerpNet* Net, uint8_t* FrameType, uint32_t* FrameS
 {
 	for (;;)
 	{
-		DERPNET_LOG("reading more data from socket, BufferSize=%zu, BufferReceived=%zu", Net->BufferSize, Net->BufferReceived);
-		if (!DerpNet__TlsRead(Net, Wait))
-		{
-			return -1;
-		}
-
 		const size_t FrameHeaderSize = 1 + 4;
+
+		if (!Wait)
+		{
+			if (!DerpNet__TlsRead(Net, Wait))
+			{
+				return -1;
+			}
+		}
 
 		if (Net->BufferSize < FrameHeaderSize)
 		{
 			if (Wait)
 			{
+				if (!DerpNet__TlsRead(Net, Wait))
+				{
+					return -1;
+				}
 				continue;
 			}
 			return 0;
@@ -1298,6 +1311,10 @@ static int DerpNet__ReadFrame(DerpNet* Net, uint8_t* FrameType, uint32_t* FrameS
 		{
 			if (Wait)
 			{
+				if (!DerpNet__TlsRead(Net, Wait))
+				{
+					return -1;
+				}
 				continue;
 			}
 			return 0;

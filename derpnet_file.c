@@ -175,7 +175,7 @@ int main(int argc, char* argv[])
 			DerpKey ReceiveUser;
 
 			int ReceiveResult = DerpNet_Recv(&Net, &ReceiveUser, &ReceiveData, &ReceiveSize, true);
-			if (ReceiveResult < 0)
+			if (ReceiveResult <= 0)
 			{
 				printf("ERROR!\n");
 				exit(1);
@@ -214,7 +214,7 @@ int main(int argc, char* argv[])
 			DerpKey ReceiveUser;
 
 			int ReceiveResult = DerpNet_Recv(&Net, &ReceiveUser, &ReceiveData, &ReceiveSize, true);
-			if (ReceiveResult < 0)
+			if (ReceiveResult <= 0)
 			{
 				printf("ERROR!\n");
 				exit(1);
