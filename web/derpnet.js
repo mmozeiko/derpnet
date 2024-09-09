@@ -12,6 +12,8 @@
     const ws = new WebSocket(`wss://${derpServer}/derp`, "derp");
     ws.binaryType = "arraybuffer";
 
+    let serverPublicKey = null;
+
     let incomingSize = 0;
     const incomingData = new Uint8Array(64*1024);
     const incomingView = new DataView(incomingData.buffer);
@@ -19,13 +21,13 @@
     const sharedKeyCache = new Map();
 
     const getSharedKey = (publicKey) => {
-      const key = String.fromCharCode(...publicKey);
-      const sharedKey = sharedKeyCache.get(key);
+      const cacheKey = String.fromCharCode(...publicKey);
+      const sharedKey = sharedKeyCache.get(cacheKey);
       if (sharedKey !== undefined) {
         return sharedKey;
       }
       const newSharedKey = nacl.box.before(publicKey, secretKey);
-      sharedKeyCache.set(String.fromCharCode(...publicKey), newSharedKey);
+      sharedKeyCache.set(cacheKey, newSharedKey);
       return newSharedKey;
     };
 
@@ -63,8 +65,6 @@
       incomingSize -= frameHeaderLength + frameSize;
       incomingData.copyWithin(0, frameHeaderLength + frameSize, frameHeaderLength + frameSize + incomingSize);
     };
-
-    const serverPublicKey = new Uint8Array(nacl.box.publicKeyLength);
 
     const sendClientInfo = () => {
       const nonce = nacl.randomBytes(nacl.box.nonceLength);
@@ -152,7 +152,7 @@
       }
 
       const [frameType, frameSize, frameData] = frame;
-      if (frameType !== 1 || frameSize < derpMagic.length + serverPublicKey.length) {
+      if (frameType !== 1 || frameSize < derpMagic.length + nacl.box.publicKeyLength) {
         // bad ServerKey frame
         return error();
       }
@@ -162,7 +162,7 @@
         return error();
       }
 
-      serverPublicKey.set(frameData.subarray(derpMagic.length, derpMagic.length + nacl.box.publicKeyLength));
+      serverPublicKey = frameData.slice(derpMagic.length, derpMagic.length + nacl.box.publicKeyLength);
 
       ws.onmessage = (event) => onServerInfo(event.data);
       consumeFrame(frameSize);
@@ -195,18 +195,14 @@
         ws.send(frame);
 
         if (doneCallback) {
-          if (ws.bufferedAmount < maxBufferedSendAmount) {
-            doneCallback();
-          } else {
-            const idle = (deadline) => {
-              if (ws.bufferedAmount < maxBufferedSendAmount) {
-                doneCallback();
-              } else {
-                requestIdleCallback(idle);
-              }
-            };
-            requestIdleCallback(idle);
-          }
+          const idle = () => {
+            if (ws.bufferedAmount < maxBufferedSendAmount) {
+              doneCallback();
+            } else {
+              requestIdleCallback(idle);
+            }
+          };
+          idle();
         }
       },
     };
