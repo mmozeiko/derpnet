@@ -57,6 +57,9 @@ will never return 0 - function always will wait for new data to come in.
 
 To compile examples simply run `cl.exe file.c` or `clang-cl.exe file.c`
 
+Example code is not optimized for robustness or performance. Many improvements are
+possible to improve error handling and performance. These are just examples.
+
 ## derpnet_example
 
 [derpnet_example.c][] - example for API usage to send & receive message.
@@ -138,6 +141,32 @@ Enter message to send: 123 and 456 received, thank you
 Enter message to send: goodbye
 ```
 
+# derpnet_proxy
+
+[derpnet_proxy.c][] - TCP port tunneling.
+
+Example to create "proxy" by tunneling TCP port - this is similar to SSH tunneling
+but just through DerpNet.
+
+First run `s` command to start server exposing port to DerpNet:
+```
+$ derpnet_proxy.exe s 8080
+My PUBLIC key is: fdb10cf48b7945e3bc9f43c208382939fd9b7b30abd9db6365522271265a3f31
+Connecting to DERP server... OK!
+Waiting for remote connection...
+Connecting to '127.0.0.1:8080' ... OK! Connected!
+```
+
+Then run `c` command to connect to previous peer and accept connections on some port:
+```
+$ derpnet_proxy.exe c fdb10cf48b7945e3bc9f43c208382939fd9b7b30abd9db6365522271265a3f31 8123
+Connecting to DERP server... OK!
+Listening on '127.0.0.1:8123' ... OK!
+Waiting for local connection... OK! Connected!
+```
+Now anybody connecting to `127.0.0.1:8123` will be actually having all their TCP
+traffic redirected to first remote on port `8080`.
+
 # License
 
 This is free and unencumbered software released into the public domain.
@@ -152,3 +181,4 @@ commercial or non-commercial, and by any means.
 [derpnet_example.c]: derpnet_example.c
 [derpnet_file.c]: derpnet_file.c
 [derpnet_chat.c]: derpnet_chat.c
+[derpnet_proxy.c]: derpnet_proxy.c
