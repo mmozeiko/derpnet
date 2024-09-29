@@ -29,9 +29,13 @@ typedef struct {
 	void* CredHandle[2];
 	void* CtxHandle[2];
 	uint8_t UserPrivateKey[32];
+	uint8_t LastPublicKey[32];
+	uint8_t LastSharedKey[32];
 	size_t BufferSize;
 	size_t BufferReceived;
 	size_t LastFrameSize;
+	size_t TotalReceived;
+	size_t TotalSent;
 	uint8_t Buffer[1 << 16];
 } DerpNet;
 
@@ -47,6 +51,9 @@ DERPNET_API int DerpNet_Recv(DerpNet* Net, DerpKey* ReceivedUserPublicKey, uint8
 
 // returns false if disconnected
 DERPNET_API bool DerpNet_Send(DerpNet* Net, const DerpKey* TargetUserPublicKey, const void* Data, size_t DataSize);
+
+// use this if you're an expert!
+DERPNET_API bool DerpNet_SendEx(DerpNet* Net, const DerpKey* TargetUserPublicKey, const uint8_t SharedKey[32], const uint8_t Nonce[24], const void* Data, size_t DataSize);
 
 //
 // implementation
@@ -86,7 +93,7 @@ DERPNET_API bool DerpNet_Send(DerpNet* Net, const DerpKey* TargetUserPublicKey, 
 #	define hi128(a) ((uint64_t)(a >> 64))
 #elif defined(_MSC_VER)
 	typedef struct { uint64_t lo, hi; } uint128;
-#   include <intrin.h>
+#	include <intrin.h>
 #	define mul64x64_128(out,a,b) out.lo = _umul128(a,b,&out.hi)
 #	define shr128_pair(out,hi,lo,shift) out = __shiftright128(lo, hi, shift)
 #	define shl128_pair(out,hi,lo,shift) out = __shiftleft128(lo, hi, shift)
@@ -884,17 +891,17 @@ static void salsa20_xor(uint8_t* Output, const uint8_t* Input, size_t InputSize,
 // nacl box seal/unseal
 //
 
-static void DerpNet__BoxSeal(uint8_t Nonce[24], uint8_t Auth[16], uint8_t* Output, const uint8_t* Input, size_t InputSize, const uint8_t PrivateKey[32], const uint8_t PublicKey[32])
+static void DerpNet__GetSharedKey(uint8_t SharedKey[32], const uint8_t PrivateKey[32], const uint8_t PublicKey[32])
 {
-	DerpNet__GetRandom(Nonce, 24);
-
 	uint8_t SharedSecret[32];
 	curve25519_scalarmult(SharedSecret, PrivateKey, PublicKey);
-	
-	uint8_t SharedKey[32];
+
 	uint8_t ZeroInput[16] = { 0 };
 	hsalsa20(SharedKey, ZeroInput, SharedSecret);
+}
 
+static void DerpNet__BoxSealEx(uint8_t Nonce[24], uint8_t Auth[16], uint8_t* Output, const uint8_t* Input, size_t InputSize, const uint8_t SharedKey[32])
+{
 	// xsalsa20 key construction
 	uint8_t SubKey[32];
 	hsalsa20(SubKey, Nonce, SharedKey);
@@ -913,15 +920,17 @@ static void DerpNet__BoxSeal(uint8_t Nonce[24], uint8_t Auth[16], uint8_t* Outpu
 	poly1305_auth(Auth, Output, InputSize, FirstBlock);
 }
 
-static bool DerpNet__BoxUnseal(uint8_t* Output, const uint8_t* Input, size_t InputSize, const uint8_t Auth[16], const uint8_t Nonce[24], const uint8_t PrivateKey[32], const uint8_t PublicKey[32])
+static void DerpNet__BoxSeal(uint8_t Nonce[24], uint8_t Auth[16], uint8_t* Output, const uint8_t* Input, size_t InputSize, const uint8_t PrivateKey[32], const uint8_t PublicKey[32])
 {
-	uint8_t SharedSecret[32];
-	curve25519_scalarmult(SharedSecret, PrivateKey, PublicKey);
-
 	uint8_t SharedKey[32];
-	uint8_t ZeroInput[16] = { 0 };
-	hsalsa20(SharedKey, ZeroInput, SharedSecret);
+	DerpNet__GetSharedKey(SharedKey, PrivateKey, PublicKey);
 
+	DerpNet__GetRandom(Nonce, 24);
+	DerpNet__BoxSealEx(Nonce, Auth, Output, Input, InputSize, SharedKey);
+}
+
+static bool DerpNet__BoxUnsealEx(uint8_t* Output, const uint8_t* Input, size_t InputSize, const uint8_t Auth[16], const uint8_t Nonce[24], const uint8_t SharedKey[32])
+{
 	// xsalsa20 key construction
 	uint8_t SubKey[32];
 	hsalsa20(SubKey, Nonce, SharedKey);
@@ -945,6 +954,14 @@ static bool DerpNet__BoxUnseal(uint8_t* Output, const uint8_t* Input, size_t Inp
 
 	salsa20_xor(Output + FirstSize, Input + FirstSize, InputSize - FirstSize, SubKey, Nonce + 16, 1);
 	return true;
+}
+
+static bool DerpNet__BoxUnseal(uint8_t* Output, const uint8_t* Input, size_t InputSize, const uint8_t Auth[16], const uint8_t Nonce[24], const uint8_t PrivateKey[32], const uint8_t PublicKey[32])
+{
+	uint8_t SharedKey[32];
+	DerpNet__GetSharedKey(SharedKey, PrivateKey, PublicKey);
+
+	return DerpNet__BoxUnsealEx(Output, Input, InputSize, Auth, Nonce, SharedKey);
 }
 
 void DerpNet_CreateNewKey(DerpKey* UserSecret)
@@ -1036,6 +1053,8 @@ static bool DerpNet__TlsHandshake(DerpNet* Net, const char* Hostname, CredHandle
 					DERPNET_LOG("failed to send data to server, remote server disconnected?");
 					return false;
 				}
+				Net->TotalSent += WriteSize;
+
 				OutSize -= WriteSize;
 				OutBuffer += WriteSize;
 			}
@@ -1059,13 +1078,40 @@ static bool DerpNet__TlsHandshake(DerpNet* Net, const char* Hostname, CredHandle
 			DERPNET_LOG("failed to read data from server, remote server disconnected?");
 			return false;
 		}
-
+		Net->TotalReceived += ReadSize;
 		Net->BufferReceived += ReadSize;
 	}
 }
 
 static bool DerpNet__TlsWrite(DerpNet* Net, const void* Data, size_t DataSize)
 {
+#if DERPNET_USE_PLAIN_HTTP
+	while (DataSize != 0)
+	{
+		fd_set WriteSet;
+		FD_ZERO(&WriteSet);
+		FD_SET(Net->Socket, &WriteSet);
+
+		int Select = select((int)(Net->Socket + 1), NULL, &WriteSet, NULL, NULL);
+		if (Select < 0)
+		{
+			DERPNET_LOG("select failed");
+			return false;
+		}
+
+		int WriteSize = send(Net->Socket, Data, (int)DataSize, 0);
+		if (WriteSize <= 0)
+		{
+			DERPNET_LOG("failed to send data to server, remote server disconnected?");
+			return false;
+		}
+		Net->TotalSent += WriteSize;
+
+		Data = (char*)Data + WriteSize;
+		DataSize -= WriteSize;
+	}
+	return true; 
+#else
 	CtxtHandle ContextHandle;
 	memcpy(&ContextHandle, Net->CtxHandle, sizeof(ContextHandle));
 
@@ -1118,6 +1164,7 @@ static bool DerpNet__TlsWrite(DerpNet* Net, const void* Data, size_t DataSize)
 				DERPNET_LOG("failed to send data to server, remote server disconnected?");
 				return false;
 			}
+			Net->TotalSent += WriteSize;
 			BytesSent += WriteSize;
 		}
 
@@ -1126,11 +1173,43 @@ static bool DerpNet__TlsWrite(DerpNet* Net, const void* Data, size_t DataSize)
 	}
 
 	return true;
+#endif
 }
-
 
 static bool DerpNet__TlsRead(DerpNet* Net, bool Wait)
 {
+#if DERPNET_USE_PLAIN_HTTP
+	fd_set ReadSet;
+	FD_ZERO(&ReadSet);
+	FD_SET(Net->Socket, &ReadSet);
+
+	struct timeval TimeVal = { 0, 0 };
+	int Select = select((int)(Net->Socket + 1), &ReadSet, NULL, NULL, Wait ? NULL : &TimeVal);
+	if (Select < 0)
+	{
+		return false;
+	}
+	if (Select == 0)
+	{
+		return true;
+	}
+
+	int ReadSize = recv(Net->Socket, (char*)Net->Buffer + Net->BufferReceived, (int)(sizeof(Net->Buffer) - Net->BufferReceived), 0);
+	if (ReadSize <= 0)
+	{
+		DERPNET_LOG("failed to read data from server, remote server disconnected?");
+		return false;
+	}
+	Net->TotalReceived += ReadSize;
+	Net->BufferReceived += ReadSize;
+	Net->BufferSize += ReadSize;
+
+	DERPNET_LOG("read %d bytes from socket", ReadSize);
+	WSAResetEvent(Net->SocketEvent);
+
+	return true;
+
+#else
 	CtxtHandle ContextHandle;
 	memcpy(&ContextHandle, Net->CtxHandle, sizeof(ContextHandle));
 
@@ -1212,7 +1291,7 @@ static bool DerpNet__TlsRead(DerpNet* Net, bool Wait)
 				}
 				Net->BufferReceived -= InBuffers[0].cbBuffer + StreamSizes.cbTrailer;
 				
-				DERPNET_LOG("TLS packet decrypted - encrypted=%lu, decrypted=%lu", InBuffers[0].cbBuffer + InBuffers[1].cbBuffer + StreamSizes.cbTrailer, InBuffers[1].cbBuffer);
+				DERPNET_LOG("TLS packet decrypted - encrypted=%lu, decrypted=%lu, BufferSize=%zu, BufferReceived=%zu", InBuffers[0].cbBuffer + InBuffers[1].cbBuffer + StreamSizes.cbTrailer, InBuffers[1].cbBuffer, Net->BufferSize, Net->BufferReceived);
 
 				return true;
 			}
@@ -1252,12 +1331,13 @@ static bool DerpNet__TlsRead(DerpNet* Net, bool Wait)
 			DERPNET_LOG("failed to read data from server, remote server disconnected?");
 			return false;
 		}
-
-		DERPNET_LOG("read %d bytes from socket", ReadSize);
-		WSAResetEvent(Net->SocketEvent);
-
+		Net->TotalReceived += ReadSize;
 		Net->BufferReceived += ReadSize;
+
+		DERPNET_LOG("read %d bytes from socket, BufferReceived=%zu", ReadSize, Net->BufferReceived);
+		WSAResetEvent(Net->SocketEvent);
 	}
+#endif
 }
 
 static void DerpNet__TlsConsume(DerpNet* Net, size_t PlaintextSize)
@@ -1279,26 +1359,54 @@ static void DerpNet__TlsConsume(DerpNet* Net, size_t PlaintextSize)
 
 static int DerpNet__ReadFrame(DerpNet* Net, uint8_t* FrameType, uint32_t* FrameSize, bool Wait)
 {
-	for (;;)
+	const size_t FrameHeaderSize = 1 + 4;
+
+	if (Wait)
 	{
-		const size_t FrameHeaderSize = 1 + 4;
-
-		if (!Wait)
+		for (;;)
 		{
-			if (!DerpNet__TlsRead(Net, Wait))
-			{
-				return -1;
-			}
-		}
-
-		if (Net->BufferSize < FrameHeaderSize)
-		{
-			if (Wait)
+			if (Net->BufferSize < FrameHeaderSize)
 			{
 				if (!DerpNet__TlsRead(Net, Wait))
 				{
 					return -1;
 				}
+				continue;
+			}
+
+			*FrameType = Net->Buffer[0];
+			*FrameSize = Get32BE(Net->Buffer + 1);
+
+			if (Net->BufferSize < FrameHeaderSize + *FrameSize)
+			{
+				if (!DerpNet__TlsRead(Net, Wait))
+				{
+					return -1;
+				}
+				continue;
+			}
+
+			DerpNet__TlsConsume(Net, FrameHeaderSize);
+
+			DERPNET_LOG("received frame type=%u, size=%u, BufferSize=%zu, BufferReceived=%zu", *FrameType, *FrameSize, Net->BufferSize, Net->BufferReceived);
+			return 1;
+		}
+	}
+
+	size_t LastBufferSize = Net->BufferSize;
+
+	for (;;)
+	{
+		if (!DerpNet__TlsRead(Net, Wait))
+		{
+			return -1;
+		}
+
+		if (Net->BufferSize < FrameHeaderSize)
+		{
+			if (Net->BufferSize != LastBufferSize)
+			{
+				LastBufferSize = Net->BufferSize;
 				continue;
 			}
 			return 0;
@@ -1309,12 +1417,9 @@ static int DerpNet__ReadFrame(DerpNet* Net, uint8_t* FrameType, uint32_t* FrameS
 
 		if (Net->BufferSize < FrameHeaderSize + *FrameSize)
 		{
-			if (Wait)
+			if (Net->BufferSize != LastBufferSize)
 			{
-				if (!DerpNet__TlsRead(Net, Wait))
-				{
-					return -1;
-				}
+				LastBufferSize = Net->BufferSize;
 				continue;
 			}
 			return 0;
@@ -1339,6 +1444,7 @@ bool DerpNet_Open(DerpNet* Net, const char* DerpServer, const DerpKey* UserSecre
 	Net->Socket = INVALID_SOCKET;
 	Net->SocketEvent = NULL;
 	Net->BufferSize = Net->BufferReceived = 0;
+	Net->TotalReceived = Net->TotalSent = 0;
 
 	WSADATA SocketData;
 	int SocketOk = WSAStartup(MAKEWORD(2, 2), &SocketData);
@@ -1354,7 +1460,12 @@ bool DerpNet_Open(DerpNet* Net, const char* DerpServer, const DerpKey* UserSecre
 		.ai_socktype = SOCK_STREAM,
 	};
 
-	SocketOk = getaddrinfo(DerpServer, "443", &AddrHints, &AddrInfo);
+#if DERPNET_USE_PLAIN_HTTP
+	const char* DerpServerPort = "80";
+#else
+	const char* DerpServerPort = "443";
+#endif
+	SocketOk = getaddrinfo(DerpServer, DerpServerPort, &AddrHints, &AddrInfo);
 	if (SocketOk != 0)
 	{
 		DERPNET_LOG("cannot resolve '%s' hostname", DerpServer);
@@ -1381,6 +1492,7 @@ bool DerpNet_Open(DerpNet* Net, const char* DerpServer, const DerpKey* UserSecre
 	freeaddrinfo(AddrInfo);
 	AddrInfo = NULL;
 
+#if !DERPNET_USE_PLAIN_HTTP
 	if (!DerpNet__TlsHandshake(Net, DerpServer, &CredHandle, &CtxHandle))
 	{
 		goto error;
@@ -1390,6 +1502,7 @@ bool DerpNet_Open(DerpNet* Net, const char* DerpServer, const DerpKey* UserSecre
 	DERPNET_ASSERT(sizeof(CtxHandle) == sizeof(Net->CtxHandle));
 	memcpy(&Net->CredHandle, &CredHandle, sizeof(CredHandle));
 	memcpy(&Net->CtxHandle, &CtxHandle, sizeof(CtxHandle));
+#endif
 
 	Net->SocketEvent = WSACreateEvent();
 	DERPNET_ASSERT(Net->SocketEvent);
@@ -1421,6 +1534,7 @@ bool DerpNet_Open(DerpNet* Net, const char* DerpServer, const DerpKey* UserSecre
 
 	uint8_t FrameType;
 	uint32_t FrameSize;
+	memset(Net->LastPublicKey, 0, sizeof(Net->LastPublicKey));
 
 	//
 	// receive ServerKey frame
@@ -1510,6 +1624,7 @@ bool DerpNet_Open(DerpNet* Net, const char* DerpServer, const DerpKey* UserSecre
 	return true;
 
 error:
+#if !DERPNET_USE_PLAIN_HTTP
 	if (SecIsValidHandle(&CtxHandle))
 	{
 		DeleteSecurityContext(&CtxHandle);
@@ -1518,6 +1633,7 @@ error:
 	{
 		FreeCredentialsHandle(&CredHandle);
 	}
+#endif
 	if (Net->SocketEvent)
 	{
 		WSACloseEvent(Net->SocketEvent);
@@ -1537,8 +1653,10 @@ error:
 
 void DerpNet_Close(DerpNet* Net)
 {
+#if !DERPNET_USE_PLAIN_HTTP
 	DeleteSecurityContext((CtxtHandle*)Net->CtxHandle);
 	FreeCredentialsHandle((CredHandle*)Net->CredHandle);
+#endif
 	WSACloseEvent(Net->SocketEvent);
 	closesocket(Net->Socket);
 	WSACleanup();
@@ -1576,7 +1694,13 @@ int DerpNet_Recv(DerpNet* Net, DerpKey* ReceivedUserPublicKey, uint8_t** Receive
 				uint8_t* Data = Auth + 16;
 				uint32_t DataSize = FrameSize - (32 + 24 + 16);
 
-				bool UnsealOk = DerpNet__BoxUnseal(Data, Data, DataSize, Auth, Nonce, Net->UserPrivateKey, PublicKey);
+				if (memcmp(PublicKey, Net->LastPublicKey, sizeof(Net->LastPublicKey)) != 0)
+				{
+					DerpNet__GetSharedKey(Net->LastSharedKey, Net->UserPrivateKey, PublicKey);
+					memcpy(Net->LastPublicKey, PublicKey, sizeof(Net->LastPublicKey));
+				}
+
+				bool UnsealOk = DerpNet__BoxUnsealEx(Data, Data, DataSize, Auth, Nonce, Net->LastSharedKey);
 				if (UnsealOk)
 				{
 					memcpy(ReceivedUserPublicKey->Bytes, PublicKey, sizeof(ReceivedUserPublicKey->Bytes));
@@ -1610,6 +1734,20 @@ int DerpNet_Recv(DerpNet* Net, DerpKey* ReceivedUserPublicKey, uint8_t** Receive
 
 bool DerpNet_Send(DerpNet* Net, const DerpKey* TargetUserPublicKey, const void* Data, size_t DataSize)
 {
+	if (memcmp(TargetUserPublicKey->Bytes, Net->LastPublicKey, sizeof(Net->LastPublicKey)) != 0)
+	{
+		DerpNet__GetSharedKey(Net->LastSharedKey, Net->UserPrivateKey, TargetUserPublicKey->Bytes);
+		memcpy(Net->LastPublicKey, TargetUserPublicKey->Bytes, sizeof(Net->LastPublicKey));
+	}
+
+	uint8_t Nonce[24];
+	DerpNet__GetRandom(Nonce, sizeof(Nonce));
+
+	return DerpNet_SendEx(Net, TargetUserPublicKey, Net->LastSharedKey, Nonce, Data, DataSize);
+}
+
+bool DerpNet_SendEx(DerpNet* Net, const DerpKey* TargetUserPublicKey, const uint8_t SharedKey[32], const uint8_t InNonce[24], const void* Data, size_t DataSize)
+{
 	uint8_t OutFrame[1 << 16];
 
 	size_t OutFrameSize = 1 + 4 + 32 + 24 + 16 + DataSize;
@@ -1619,13 +1757,14 @@ bool DerpNet_Send(DerpNet* Net, const DerpKey* TargetUserPublicKey, const void* 
 	Set32BE(OutFrame + 1, (uint32_t)(OutFrameSize - (1 + 4)));
 
 	uint8_t* PublicKey = OutFrame + 1 + 4;
-	memcpy(PublicKey, TargetUserPublicKey->Bytes, sizeof(TargetUserPublicKey->Bytes));
-
 	uint8_t* Nonce = PublicKey + 32;
 	uint8_t* Auth = Nonce + 24;
 	uint8_t* Output = Auth + 16;
 
-	DerpNet__BoxSeal(Nonce, Auth, Output, (uint8_t*)Data, DataSize, Net->UserPrivateKey, PublicKey);
+	memcpy(PublicKey, TargetUserPublicKey->Bytes, sizeof(TargetUserPublicKey->Bytes));
+	memcpy(Nonce, InNonce, 24);
+
+	DerpNet__BoxSealEx(Nonce, Auth, Output, (uint8_t*)Data, DataSize, SharedKey);
 
 	return DerpNet__TlsWrite(Net, OutFrame, OutFrameSize);
 }
